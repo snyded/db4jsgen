@@ -1,0 +1,1374 @@
+#!/bin/sh
+
+#   $Id: db4jsgen,v 1.12 2004/06/22 20:55:45 dsnyder Exp $
+#
+#   db4jsgen - generates 4gl code for a basic data-entry screen
+#   Copyright (C) 2004  David A. Snyder
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; version 2 of the License.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+#   Although "db4jsgen" must be used under the terms of the GNU General
+#   Public License, the output of "db4jsgen" is exempt from the terms of
+#   the GNU General Public License.  I claim no copyright nor exclusive
+#   rights to that generated output.
+
+
+usage() {
+    echo "usage: `basename $0` -d dbname -t tabname [-b COL1 -b COL2] [-flo] program" >&2
+    exit 1
+}
+
+(echo "DB4JSGEN version 1.12, Copyright (C) 2004 David A. Snyder"; echo) >&2
+
+
+set -- `getopt d:b:flot: $* 2>/dev/null`
+if [ $? != 0 ]
+then
+        usage
+fi
+for i in $*
+do
+        case $i in
+        -d)
+                DBNAME=$2
+                shift 2
+                ;;
+        -t)
+                TABNAME=$2
+                shift 2
+                ;;
+        -b)
+                BRWNAME="$BRWNAME $2"
+                shift 2
+                ;;
+        -f)
+                FFLG=$1
+                shift
+                ;;
+        -l)
+                LFLG=$1
+                shift
+                ;;
+        -o)
+                OFLG=$1
+                shift
+                ;;
+        --)
+                shift
+                break
+                ;;
+        esac
+done
+PRGNAME=$1
+
+test -z "$DBNAME" && usage
+test -z "$TABNAME" && usage
+test -z "$PRGNAME" && usage
+if [ -n "$BRWNAME" ]
+then
+	set `echo "$BRWNAME"`
+	test $# -ne 2 && usage
+	BROWSE1=$1
+	BROWSE2=$2
+fi
+
+set -- `dbaccess $DBNAME - <<! 2>/dev/null
+select tabname from systables where tabname = "$TABNAME";
+!`
+if [ $? = 255 ]
+then
+        echo "Database not found or no system permission." >&2
+        exit 1
+fi
+if [ "$2" != "$TABNAME" ]
+then
+        echo "Table $TABNAME not found." >&2
+        exit 1
+fi
+
+
+FGL=${PRGNAME}.4gl
+F2R=${PRGNAME}.42r
+FGO=${PRGNAME}.4go
+FGI=${PRGNAME}.4gi
+PER=${PRGNAME}.per
+BPER=${PRGNAME}b.per
+F2F=${PRGNAME}.42f
+FRM=${PRGNAME}.frm
+BF2F=${PRGNAME}b.42f
+MSG=${PRGNAME}.msg
+IEM=${PRGNAME}.iem
+F2M=${PRGNAME}.42m
+ERR=${PRGNAME}.err
+TMP=${PRGNAME}.tmp
+SER=${PRGNAME}.ser
+NUM=999
+
+test -f "$FGL" && FGLEXISTS="yes"
+test -f "$MSG" && MSGEXISTS="yes"
+
+echo "*** Step 1:  Building default 4gl source ..."
+
+dbaccess $DBNAME - <<!! >/dev/null 2>&1
+output to "$TMP" without headings
+select colname from syscolumns, systables
+where syscolumns.tabid = systables.tabid and systables.tabname = "$TABNAME"
+!!
+
+LAST_COLNAME=`tail -1 $TMP`
+
+if test -n "$FGLEXISTS" -a "${FFLG}" != "-f"
+then
+        echo db4jsgen: will not over-write existing file "'$FGL'"
+else
+cat <<!! >$FGL
+# $FGL
+# Created by: db4jsgen, v1.12
+
+
+DATABASE $DBNAME
+
+
+DEFINE  w_record RECORD LIKE $TABNAME.*          # working record
+DEFINE  s_record RECORD LIKE $TABNAME.*          # saving record
+DEFINE  n_record RECORD LIKE $TABNAME.*          # null record
+DEFINE  q_cnt INTEGER                            # current size of list
+DEFINE  q_cur INTEGER                            # index position in list
+DEFINE  q_off CHAR(10)                           # offset to jump 'n' rows
+DEFINE  rowids DYNAMIC ARRAY OF INTEGER          # array of ROWIDs
+
+
+{*******************************************************************************
+* This program drives the $TABNAME screen.
+*******************************************************************************}
+
+MAIN
+    DEFER INTERRUPT
+    CALL menu_$TABNAME()
+    CLEAR SCREEN
+END MAIN
+
+
+{*******************************************************************************
+* This function handles the main ring menu.                                    *
+*******************************************************************************}
+
+FUNCTION menu_$TABNAME()
+    CALL init_$TABNAME()
+
+    OPEN FORM $PRGNAME FROM "$PRGNAME"
+    DISPLAY FORM $PRGNAME
+
+    MENU "OPTIONS"
+        BEFORE MENU
+            HIDE OPTION ALL
+            SHOW OPTION "query", "add", "exit", "about"
+        COMMAND "query" "Searches the active database table." HELP 1
+            CALL qry_$TABNAME()
+            CALL disp_$TABNAME()
+            IF q_cnt > 0 THEN
+                SHOW OPTION ALL
+            ELSE
+                HIDE OPTION ALL
+                SHOW OPTION "query", "add", "exit", "about"
+            END IF
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+        COMMAND "browse" "Browse through rows in the Current List." HELP 1
+            IF repo_$TABNAME("C", "S") THEN
+                CALL brw_$TABNAME()
+                CALL disp_$TABNAME()
+            END IF
+!!
+fi
+cat <<!! >>$FGL
+        COMMAND "first" "Shows the first row in the Current List." HELP 1
+            IF repo_$TABNAME("F", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "previous" "Shows the previous row in the Current List." HELP 1
+            IF repo_$TABNAME("P", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "next" "Shows the next row in the Current List." HELP 1
+            IF repo_$TABNAME("N", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "last" "Shows the last row in the Current List." HELP 1
+            IF repo_$TABNAME("L", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "add" "Adds a row to the active database table." HELP 1
+            CALL add_$TABNAME()
+            CALL disp_$TABNAME()
+            IF q_cnt > 0 THEN
+                SHOW OPTION ALL
+            ELSE
+                HIDE OPTION ALL
+                SHOW OPTION "query", "add", "exit", "about"
+            END IF
+        COMMAND "change" "Changes a row in the active database table." HELP 1
+            IF repo_$TABNAME("C", "U") THEN
+                CALL upd_$TABNAME()
+            END IF
+            CALL disp_$TABNAME()
+        COMMAND "delete" "Deletes a row in the active database table." HELP 1
+            IF repo_$TABNAME("C", "U") THEN
+                CALL del_$TABNAME()
+            END IF
+            CALL disp_$TABNAME()
+            IF q_cnt > 0 THEN
+                SHOW OPTION ALL
+            ELSE
+                HIDE OPTION ALL
+                SHOW OPTION "query", "add", "exit", "about"
+            END IF
+        COMMAND "print" "Print selected row in report format." HELP 1
+            IF repo_$TABNAME("C", "S") THEN
+                CALL out_$TABNAME()
+            END IF
+        COMMAND "exit" "Returns to the INFORMIX-SQL menu." HELP 1
+            EXIT MENU
+        COMMAND "about" "Displays basic program information." HELP 1
+            CALL about_$TABNAME()
+        COMMAND KEY (INTERRUPT)
+            EXIT MENU
+        COMMAND KEY ("0")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "0"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("1")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "1"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("2")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "2"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("3")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "3"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("4")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "4"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("5")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "5"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("6")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "6"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("7")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "7"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("8")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "8"
+            WHENEVER ERROR STOP
+        COMMAND KEY ("9")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "9"
+            WHENEVER ERROR STOP
+    END MENU
+    CLOSE FORM $PRGNAME
+END FUNCTION
+
+
+{*******************************************************************************
+* This function initializes options and variables.                             *
+*******************************************************************************}
+
+FUNCTION init_$TABNAME()
+!!
+if [ "$LFLG" = "-l" -a "$OFLG" = "-o" ]
+then
+cat <<!! >>$FGL
+    SET ISOLATION TO DIRTY READ
+
+!!
+fi
+cat <<!! >>$FGL
+    OPTIONS HELP FILE "$IEM"
+    OPTIONS INPUT WRAP
+
+    INITIALIZE n_record.* TO NULL
+    LET w_record.* = n_record.*   # Faster than INITIALIZE
+
+    LET q_cnt = 0
+    LET q_cur = 0
+    LET q_off = "0"
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+    PREPARE brw_stmt FROM
+      "SELECT $BROWSE1, $BROWSE2 FROM $TABNAME WHERE ROWID = ?"
+    DECLARE brw_curs CURSOR FOR brw_stmt
+
+!!
+fi
+cat <<!! >>$FGL
+    PREPARE std_stmt FROM
+      "SELECT * FROM $TABNAME WHERE ROWID = ?"
+    DECLARE std_curs CURSOR FOR std_stmt
+
+    PREPARE upd_stmt FROM
+      "SELECT * FROM $TABNAME WHERE ROWID = ? FOR UPDATE"
+    DECLARE upd_curs CURSOR FOR upd_stmt
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will query the database table.                                 *
+*******************************************************************************}
+
+FUNCTION qry_$TABNAME()
+    DEFINE  q_txt CHAR(512)
+    DEFINE  the_rowid INTEGER
+    DEFINE  retval SMALLINT
+
+    CLEAR FORM
+    LET int_flag = FALSE
+    CONSTRUCT BY NAME q_txt ON
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      $TABNAME.$COLNAME," >>$FGL
+        else
+            echo "      $TABNAME.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     HELP 2
+        ON KEY (CONTROL-P)
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+    END CONSTRUCT
+
+    IF int_flag THEN
+        RETURN
+    END IF
+
+    LET q_txt = "SELECT $TABNAME.rowid FROM $TABNAME WHERE ", q_txt CLIPPED
+
+    WHENEVER ERROR CONTINUE
+    OPTIONS SQL INTERRUPT ON
+    MESSAGE "Searching ..."
+
+    PREPARE q_sid FROM q_txt
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+        OPTIONS SQL INTERRUPT OFF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    DECLARE q_curs CURSOR FOR q_sid
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+        OPTIONS SQL INTERRUPT OFF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    LET q_cnt = 0
+    FOREACH q_curs INTO the_rowid
+        LET q_cnt = q_cnt + 1
+        LET rowids[q_cnt] = the_rowid
+
+        IF int_flag THEN
+            EXIT FOREACH
+        END IF
+    END FOREACH
+
+    OPTIONS SQL INTERRUPT OFF
+    WHENEVER ERROR STOP
+
+    MESSAGE ""
+    IF int_flag THEN
+        CALL fgl_winmessage("Warning", "Statement interrupted by user.", "exclamation")
+        SLEEP 1
+    END IF
+
+    IF q_cnt > 0 THEN
+        LET q_cur = 1
+        LET retval = repo_$TABNAME("C", "S")
+    ELSE
+        LET q_cur = 0
+        LET w_record.* = n_record.*   # Faster than INITIALIZE
+        CALL fgl_winmessage("Warning", "There are no rows satisfying the conditions.", "exclamation")
+    END IF
+END FUNCTION
+
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function browses through the current list.                              *
+*******************************************************************************}
+
+FUNCTION brw_$TABNAME()
+    DEFINE  i INTEGER
+    DEFINE  b_records DYNAMIC ARRAY OF RECORD        # browse records
+                ${BROWSE1} LIKE $TABNAME.${BROWSE1},
+                ${BROWSE2} LIKE $TABNAME.${BROWSE2}
+            END RECORD
+    DEFINE  retval SMALLINT
+
+    FOR i = 1 TO q_cnt
+        OPEN brw_curs USING rowids[i]
+        FETCH brw_curs INTO b_records[i].$BROWSE1, b_records[i].$BROWSE2
+    END FOR
+
+    OPEN WINDOW browse WITH FORM "${PRGNAME}b" ATTRIBUTE(TEXT="Browse")
+
+    LET int_flag = FALSE
+    DISPLAY ARRAY b_records TO bs_record.* ATTRIBUTES(COUNT=q_cnt)
+
+    CLOSE WINDOW browse
+
+    IF NOT int_flag THEN
+        LET q_cur = arr_curr()
+        LET retval = repo_${TABNAME}("C", "S")
+    END IF
+END FUNCTION
+
+
+!!
+fi
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function adds a row to the database table.                              *
+*******************************************************************************}
+
+FUNCTION add_$TABNAME()
+    DEFINE  the_rowid INTEGER
+
+    LET s_record.* = w_record.*
+    LET w_record.* = n_record.*   # Faster than INITIALIZE
+
+    CLEAR FORM
+    LET int_flag = FALSE
+    INPUT BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      w_record.$COLNAME," >>$FGL
+        else
+            echo "      w_record.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     HELP 2
+        ON KEY (CONTROL-P)
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+    END INPUT
+
+    IF int_flag THEN
+        LET w_record.* = s_record.*
+        RETURN
+    END IF
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+    WHENEVER ERROR CONTINUE
+
+    BEGIN WORK
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+fi
+cat <<!! >>$FGL
+    WHENEVER ERROR CONTINUE
+
+    LET w_record.Qsername = 0
+    INSERT INTO $TABNAME VALUES (w_record.*)
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+    LET w_record.Qsername = sqlca.sqlerrd[2]
+    LET the_rowid = sqlca.sqlerrd[6]
+
+    DISPLAY BY NAME w_record.Qsername
+
+    LET q_cnt = q_cnt + 1
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+    COMMIT WORK
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+fi
+cat <<!! >>$FGL
+    WHENEVER ERROR STOP
+
+    LET q_cur = q_cnt
+    LET rowids[q_cur] = the_rowid
+
+    CALL fgl_winmessage("Information", "Row added.", "information")
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will update the current row.                                   *
+*******************************************************************************}
+
+FUNCTION upd_$TABNAME()
+    LET s_record.* = w_record.*
+
+    LET int_flag = FALSE
+    INPUT BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      w_record.$COLNAME," >>$FGL
+        else
+            echo "      w_record.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     WITHOUT DEFAULTS HELP 2
+        ON KEY (CONTROL-P)
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+    END INPUT
+
+    IF int_flag THEN
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        LET w_record.* = s_record.*
+        RETURN
+    END IF
+
+    WHENEVER ERROR CONTINUE
+
+    UPDATE $TABNAME SET $TABNAME.* = w_record.* WHERE CURRENT OF upd_curs
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "    COMMIT WORK" >>$FGL
+else
+echo "    CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        LET w_record.* = s_record.*
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    WHENEVER ERROR STOP
+
+    CALL fgl_winmessage("Information", "This row has been changed.", "information")
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will delete the current row.                                   *
+*******************************************************************************}
+
+FUNCTION del_$TABNAME()
+    DEFINE  answer CHAR(3)
+
+    LET answer = fgl_winquestion("Delete", "Delete this row from the active table?", "no", "yes|no", "question", 0)
+
+    WHENEVER ERROR CONTINUE
+
+    IF answer = "no" THEN
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    DELETE FROM $TABNAME WHERE CURRENT OF upd_curs
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "    COMMIT WORK" >>$FGL
+else
+echo "    CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    WHENEVER ERROR STOP
+
+    CALL shuffle_$TABNAME()              # I deleted this record
+
+    CALL fgl_winmessage("Information", "Row deleted.", "information")
+END FUNCTION
+
+
+{*******************************************************************************
+* This function prints the current row to DBPRINT.
+*******************************************************************************}
+
+FUNCTION out_$TABNAME()
+    START REPORT rpt_${TABNAME} TO SCREEN
+    OUTPUT TO REPORT rpt_${TABNAME}(w_record.*)
+    FINISH REPORT rpt_${TABNAME}
+
+    CALL fgl_winmessage("Information", "Row printed.", "information")
+END FUNCTION
+
+
+{*******************************************************************************
+* This function gets the current, next, or previous row.                       *
+*******************************************************************************}
+
+FUNCTION repo_$TABNAME(direction, cursor_type)
+DEFINE  direction CHAR(1)
+DEFINE  cursor_type CHAR(1)
+
+    DEFINE  the_rowid INTEGER
+    DEFINE  q_jmp INTEGER
+
+    IF q_cnt = 0 THEN
+        CALL fgl_winmessage("Error", "There are no rows in the current list.", "stop")
+        RETURN FALSE
+    ELSE
+        MESSAGE ""
+    END IF
+
+    LET q_jmp = q_off
+    IF q_jmp = 0 THEN
+        LET q_jmp = 1
+    END IF
+    LET q_off = "0"
+
+    CASE direction
+        WHEN "N"
+            LET q_cur = q_cur + q_jmp
+            IF  q_cur > q_cnt THEN
+                LET q_cur = q_cnt
+                CALL fgl_winmessage("Error", "There are no more rows in the direction your are going.", "stop")
+            END IF
+        WHEN "P"
+            LET q_cur = q_cur - q_jmp
+            IF  q_cur < 1 THEN
+                LET q_cur = 1
+                CALL fgl_winmessage("Error", "There are no more rows in the direction your are going.", "stop")
+            END IF
+        WHEN "F"
+            LET q_cur = 1
+        WHEN "L"
+            LET q_cur = q_cnt
+        WHEN "C"
+            #  Do Nothing !!!
+    END CASE
+
+    WHENEVER ERROR CONTINUE
+
+    LET the_rowid = rowids[q_cur]
+!!
+cat <<!! >>$FGL
+    IF cursor_type = "U" THEN
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        BEGIN WORK
+        IF sqlca.sqlcode THEN
+            CALL err_$TABNAME()
+            WHENEVER ERROR STOP
+            RETURN FALSE
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        OPEN upd_curs USING the_rowid
+    ELSE
+        OPEN std_curs USING the_rowid
+    END IF
+!!
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_$TABNAME()
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        IF cursor_type = "U" THEN
+            ROLLBACK WORK
+            IF sqlca.sqlcode THEN
+                CALL err_$TABNAME()
+            END IF
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN FALSE
+    END IF
+
+    WHENEVER ERROR CONTINUE
+    IF cursor_type = "U" THEN
+        FETCH upd_curs INTO w_record.*
+    ELSE
+        FETCH std_curs INTO w_record.*
+    END IF
+    IF sqlca.sqlcode THEN
+        IF sqlca.sqlcode = NOTFOUND THEN
+            CALL fgl_winmessage("Error", "Someone else has deleted a row which is in your list.", "stop")
+            CALL shuffle_$TABNAME()              # Other deleted this record
+            IF cursor_type = "S" THEN
+                WHENEVER ERROR STOP
+                RETURN TRUE
+            END IF
+        ELSE
+            CALL err_$TABNAME()
+        END IF
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        IF cursor_type = "U" THEN
+            ROLLBACK WORK
+            IF sqlca.sqlcode THEN
+                CALL err_$TABNAME()
+            END IF
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN FALSE
+    END IF
+
+    WHENEVER ERROR STOP
+
+    RETURN TRUE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays data for the current row.                             *
+*******************************************************************************}
+
+FUNCTION disp_$TABNAME()
+    DISPLAY BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "      w_record.$COLNAME," >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+      q_cur,
+      q_cnt
+END FUNCTION
+
+
+{*******************************************************************************
+* This function does the actual formating and printing.                        *
+*******************************************************************************}
+
+REPORT rpt_${TABNAME}(r_record)
+DEFINE  r_record RECORD LIKE $TABNAME.*
+
+    FORMAT EVERY ROW
+
+END REPORT
+
+
+{*******************************************************************************
+* This function brings in the most recent column value of the row.             *
+*******************************************************************************}
+
+FUNCTION ctrl_p_$TABNAME()
+    CASE
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        WHEN INFIELD($COLNAME)" >>$FGL
+        echo "            LET w_record.$COLNAME = s_record.$COLNAME" >>$FGL
+        echo "            DISPLAY BY NAME w_record.$COLNAME" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+    END CASE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function shuffles the rowid array down one element (after a delete).    *
+*******************************************************************************}
+
+FUNCTION shuffle_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    CALL rowids.deleteElement(q_cur)
+
+    LET q_cnt = q_cnt - 1
+    IF q_cur > q_cnt THEN
+        LET q_cur = q_cnt
+    END IF
+
+    IF q_cur = 0 THEN
+        LET w_record.* = n_record.*   # Faster than INITIALIZE
+    ELSE
+        LET retval = repo_$TABNAME("C", "S")
+    END IF
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays an error message in a pop up window.                  *
+*******************************************************************************}
+ 
+FUNCTION err_$TABNAME()
+    DEFINE  error_text CHAR(160)
+ 
+    LET error_text =
+      sqlca.sqlcode USING "-<<<<<", ": ", err_get(sqlca.sqlcode), "\n",
+      sqlca.sqlerrd[2] USING "-<<<<<", ": ", err_get(sqlca.sqlerrd[2])
+
+    CALL fgl_winmessage("Error", error_text, "stop")
+END FUNCTION
+ 
+ 
+{*******************************************************************************
+* This function displays basic program information.                            *
+*******************************************************************************}
+
+FUNCTION about_$TABNAME()
+    DEFINE  about_text CHAR(80)
+
+    LET about_text =
+      "$PRGNAME - Created by: db4jsgen, v1.12"
+
+    CALL fgl_winmessage("Information", about_text, "information")
+END FUNCTION
+
+
+!!
+fi
+
+echo "*** Step 2:  Building default help ..."
+if test -n "$MSGEXISTS" -a "${FFLG}" != "-f"
+then
+        echo db4jsgen: will not over-write existing file "'$MSG'"
+else
+cat <<!! >$MSG
+.1
+OPTIONS.
+
+The OPTIONS Menu presents you with the following options:
+
+ > Query            Searches the table
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$MSG
+ > Browse           Browse through rows in Current List
+!!
+fi
+cat <<!! >>$MSG
+ > First            Displays the first row in the Current List
+ > Previous         Displays the previous row in the Current List
+ > Next             Displays the next row in the Current List
+ > Last             Displays the last row in the Current List
+ > Add              Adds data to the active table
+ > Change           Changes a row in the active table
+ > Delete           Deletes a row from the active table
+ > Print            Sends a report to an output destination
+ > Exit             Returns to the Main Menu
+
+PROCEDURE:
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$MSG
+Click the button of the toolbar option you want:  Query, Browse, Next, Previous,
+First, Last, Add, Change, Delete, Print, or Exit.
+!!
+else
+cat <<!! >>$MSG
+Click the button of the toolbar option you want:  Query, Next, Previous, First,
+Last, Add, Change, Delete, Print, or Exit.
+!!
+fi
+cat <<!! >>$MSG
+
+Use the Next and Previous options to view the next or previous row in the
+Current List.  First use the Query option to generate a Current List (a list of
+all the rows that satisfy your query).  If there is more than one row in the
+Current List, you can select the Next option to look at the next row.  After
+you use Next, you can use the Previous option to look at the previous row.
+
+Use the Exit option to leave the application and return to the Main Menu.
+After you select the Exit option, you are returned to the Main Menu.
+
+
+QUIT:
+
+Select the Exit option to leave the OPTIONS Menu and return to the MAIN Menu.
+
+
+NOTES:
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$MSG
+You cannot select Browse, Change, Next, Previous, First, Last, Delete, or Print
+until you have generated a Current List with Query.
+!!
+else
+cat <<!! >>$MSG
+You cannot select Change, Next, Previous, First, Last, Delete, or Print until
+you have generated a Current List with Query.
+!!
+fi
+cat <<!! >>$MSG
+.2
+FIELD EDITING CONTROL KEYS:
+CTRL X    : Deletes a character
+CTRL A    : Toggles in and out of character insertion mode
+CTRL D    : Clears to the end of the field
+left      : Backspace
+right     : Forward Space
+up        : Traverse backwards through the fields
+CTRL P    : Brings in most recent column value of the row
+F1        : Display help message
+CR        : Entry Complete
+CTRL I    : Next field
+down      : Next field
+ESCAPE    : Abort Command
+INTERRUPT : Abort Command
+
+
+
+
+QUERY COMPARISON SYMBOLS:
+<     Less than                 <=    Less than or equal
+>     Greater than              >=    Greater than or equal
+=     Equal                     <>    Not equal
+>>    Last value (only for indexed columns, without other comparisons)
+<<    First value (same conditions as last value)
+:     Range (inclusive)
+|     OR condition
+The colon for range comparison is typed between the desired range values
+The pipe symbol for OR separates the different possibilities
+         All other symbols are typed in front of the column value
+An asterisk (*) is used for wild card comparison of character columns
+A blank field means don't care
+         To match for a blank character field, use the equality symbol
+!!
+fi
+
+echo "*** Step 3:  Checking for a SERIAL field in $TABNAME ..."
+dbaccess $DBNAME - <<! >/dev/null 2>&1
+output to "$TMP" without headings
+select  colname
+from    syscolumns, systables
+where   syscolumns.tabid = systables.tabid
+and     systables.tabname = "$TABNAME"
+and     (syscolumns.coltype = 262 or syscolumns.coltype = 6)
+!
+echo > $SER
+cat $TMP |
+while read COLNAME COLTYPE rest_of_line
+do
+        if [ _$COLNAME != _ ]
+        then
+                echo $COLNAME > $SER
+        fi
+done
+
+# if table doesn't have serial field, remove any references from source file
+if test -z "$FGLEXISTS" -o "${FFLG}" = "-f"
+then
+SERNAME=`cat $SER`
+if [ _$SERNAME = _ ]
+then
+ed - $FGL <<! >/dev/null 2>&1
+g/Qsername/d
+w
+q
+!
+else
+ed - $FGL <<! >/dev/null 2>&1
+g/Qsername/s//$SERNAME/
+w
+q
+!
+fi
+fi
+
+echo "*** Step 4:  Building default form(s) ..."
+if test -f "$PER" -a "${FFLG}" != "-f"
+then
+        echo db4jsgen: will not over-write existing file "'$PER'"
+else
+form4gl -d $PRGNAME $DBNAME $TABNAME >/dev/null 2>&1
+ed - $PER <<! >/dev/null 2>&1
+3a
+
+--ROW-[x000  ]-OF-[x001  ]-----------------------------------------------------
+
+.
+$
+i
+x000 = formonly.q_cur, noentry, reverse;
+x001 = formonly.q_cnt, noentry, reverse;
+.
+w
+q
+!
+ed - $PER <<! >/dev/null 2>&1
+1a
+TOPMENU
+  GROUP form (text="File")
+     COMMAND print (text="Print",image="fileprint")
+      SEPARATOR
+     COMMAND exit (text="Exit", image="stop")
+  END
+  GROUP form (text="Edit")
+     COMMAND query (text="Query", image="find")
+     COMMAND add (text="Add", image="plus")
+     COMMAND change (text="Change",image="pen")
+     COMMAND delete (text="Delete",image="delete")
+  END
+  GROUP form (text="View")
+     COMMAND first (text="First", image="gobegin")
+     COMMAND previous (text="Previous", image="gorev")
+     COMMAND next (text="Next", image="goforw")
+     COMMAND last (text="Last", image="goend")
+  END
+  GROUP form (text="Help")
+     COMMAND help (text="Help")
+     COMMAND about (text="About $PRGNAME")
+  END
+END
+TOOLBAR
+ ITEM query (text="Query",image="find")
+  SEPARATOR
+ ITEM first (text="First",image="gobegin")
+  SEPARATOR
+ ITEM previous (text="Prev" ,image="gorev")
+  SEPARATOR
+ ITEM next (text="Next",image="goforw")
+  SEPARATOR
+ ITEM last (text="Last",image="goend")
+  SEPARATOR
+ ITEM add (text="Add",image="plus")
+  SEPARATOR
+ ITEM change (text="Change",image="pen")
+  SEPARATOR
+ ITEM delete (text="Delete",image="delete")
+  SEPARATOR
+ ITEM print (text="Print",image="fileprint")
+  SEPARATOR
+ ITEM exit (text="Exit",image="stop")
+END
+.
+/screen size 24 by 80/s//   GRID/
+.
+i
+LAYOUT(text="$TABNAME Maintenance")
+ GROUP(text="$TABNAME Info.")
+  VBOX
+.
+/end/s//END --Layout/
+.
+i
+   END --Grid
+  END --Vbox
+ END --Group
+.
+w
+q
+!
+rm -f $FRM
+
+if test -n "$BRWNAME"
+then
+ed - $PER <<! >/dev/null 2>&1
+14a
+      COMMAND browse (text="Browse",image="cascade")
+       SEPARATOR
+.
+w
+q
+!
+
+ed - $PER <<! >/dev/null 2>&1
+29a
+ ITEM browse (text="Browse",image="cascade")
+  SEPARATOR
+.
+w
+q
+!
+fi
+fi
+
+if test -n "$BRWNAME"
+then
+if test -f "$BPER" -a "${FFLG}" != "-f"
+then
+        echo db4jsgen: will not over-write existing file "'$BPER'"
+else
+cat <<!! >$BPER
+database $DBNAME
+layout
+table
+{
+ $BROWSE1    $BROWSE2
+[f000      ][f001                ]
+}
+end
+end
+tables
+$TABNAME
+attributes
+f000 = $TABNAME.$BROWSE1;
+f001 = $TABNAME.$BROWSE2;
+end
+instructions
+screen record bs_record($BROWSE1, $BROWSE2)
+end
+!!
+fi
+fi
+
+echo "*** Step 5:  Building default makefile ..."
+if test -f "Makefile" -a "${FFLG}" != "-f"
+then
+        echo db4jsgen: will not over-write existing file "'Makefile'"
+else
+cat <<!! >Makefile
+# Makefile for executable $PRGNAME ($F2R)
+
+
+################################################################################
+# Dependencies for creating the complete working screen.                       #
+################################################################################
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile
+all: $F2R $F2F $BF2F $IEM
+!!
+else
+cat <<!! >>Makefile
+all: $F2R $F2F $IEM
+!!
+fi
+cat <<!! >>Makefile
+
+
+################################################################################
+# Dependencies for creating individual executable, form, and help files.       #
+################################################################################
+
+$F2R: $F2M
+	fgl2p $F2M -o $F2R
+
+$F2F: $PER
+	fglform -s $PER
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile
+$BF2F: $BPER
+	fglform -s $BPER
+
+!!
+fi
+cat <<!! >>Makefile
+$IEM: $MSG
+	fglmkmsg $MSG $IEM
+
+
+################################################################################
+# Dependencies for creating executable's modules.                              #
+################################################################################
+
+$F2M: $FGL
+	fgl2p $FGL
+
+
+################################################################################
+# Dependency for cleaning up when all done.                                    #
+################################################################################
+
+clean:
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile
+	rm -f $F2R $F2M $F2F $BF2F $IEM
+!!
+else
+cat <<!! >>Makefile
+	rm -f $F2R $F2M $F2F $IEM
+!!
+fi
+fi
+
+rm -f $ERR $TMP $SER
+exit 0

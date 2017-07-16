@@ -1,0 +1,69 @@
+description:
+fourJ's 4GL Code Generator
+----------------------------
+revision 1.12
+date: 2004/06/22 20:55:45;  author: dsnyder;  state: Exp;  lines: +25 -25
+Fixed help file extensions to conform with fourJs naming standards.
+----------------------------
+revision 1.11
+date: 2004/06/18 20:04:30;  author: dsnyder;  state: Exp;  lines: +5 -5
+Switched report from PRINTER to SCREEN.
+----------------------------
+revision 1.10
+date: 2004/06/18 14:52:41;  author: dsnyder;  state: Exp;  lines: +27 -11
+Removed "delimiters" from browse screen.
+Changed "CTRL W" to "F1" in help screen.
+Added "about" to TOPMENU in main screen.
+Added "about" to ring menu and "about" function to the .4gl file.
+----------------------------
+revision 1.9
+date: 2004/05/03 00:28:41;  author: dsnyder;  state: Exp;  lines: +3 -27
+Removed "cur_choice" because it's not needed in windows.
+----------------------------
+revision 1.8
+date: 2004/05/03 00:25:16;  author: dsnyder;  state: Exp;  lines: +5 -7
+Misc. cosmetic changes.
+----------------------------
+revision 1.7
+date: 2004/04/23 14:03:19;  author: dsnyder;  state: Exp;  lines: +5 -3
+Now allow user to exit by clicking the windows "close" object.
+----------------------------
+revision 1.6
+date: 2004/04/22 18:50:07;  author: dsnyder;  state: Exp;  lines: +45 -37
+Moved b_records record to the browse function.
+Changed all calls to err_print() to use my new error function.
+Changed the "cur_choice" variable in the delete function to "answer".
+----------------------------
+revision 1.5
+date: 2004/04/20 16:31:58;  author: dsnyder;  state: Exp;  lines: +33 -89
+Browse screen should only generate when browse is selected.
+"Output" --> "Print"
+Minimize the number of ON KEYs.
+CLEAR FORM during add.
+Print current row only.
+Updates to HELP file.
+----------------------------
+revision 1.4
+date: 2004/04/19 18:34:44;  author: dsnyder;  state: Exp;  lines: +64 -86
+Re-arranged Next, Previous, First, Last.
+Renamed Update/Remove to Change/Delete.
+Removed Current.
+Removed LAST LINE Options.
+Converted ERROR & MESSAGE to fgl_winmessage().
+Delete (Remove) now has a Yes/No popup instead of a ring menu.
+Changed help file.
+----------------------------
+revision 1.3
+date: 2004/04/19 16:50:00;  author: dsnyder;  state: Exp;  lines: +35 -60
+Moved toolbar from .4gl/.4tb to .per.
+Added scroll bar to Browse.
+----------------------------
+revision 1.2
+date: 2004/04/13 22:37:06;  author: dsnyder;  state: Exp;  lines: +134 -18
+Added toolbar and drop-down menus.
+Added logic to show/hide menu options accordingly.
+----------------------------
+revision 1.1
+date: 2004/04/13 14:04:52;  author: dsnyder;  state: Exp;
+Initial revision.
+=============================================================================
